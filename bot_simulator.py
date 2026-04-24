@@ -34,7 +34,6 @@ class Config:
     min_quote_volume: float = 5_000_000
     quote_asset: str = "USDT"
     poll_seconds: int = 30
-    tz_offset_hours: int = -2
 
 
 @dataclasses.dataclass
@@ -127,23 +126,9 @@ def sma(values: List[float]) -> float:
     return sum(values) / len(values)
 
 
-def to_display_time(ts_ms: int, tz_offset_hours: int) -> str:
-    tz = timezone.utc
-    dt = datetime.fromtimestamp(ts_ms / 1000, tz=tz)
-    if tz_offset_hours == 0:
-        return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
-    sign = "+" if tz_offset_hours > 0 else ""
-    shifted = dt.timestamp() + (tz_offset_hours * 3600)
-    shifted_dt = datetime.fromtimestamp(shifted, tz=tz)
-    return shifted_dt.strftime(f"%Y-%m-%d %H:%M:%S UTC{sign}{tz_offset_hours}")
-
-
-def timeframe_to_ms(interval: str) -> int:
-    units = {"m": 60_000, "h": 3_600_000, "d": 86_400_000, "w": 604_800_000}
-    suffix = interval[-1]
-    if suffix not in units:
-        raise ValueError(f"Intervalle non supporté: {interval}")
-    return int(interval[:-1]) * units[suffix]
+def to_utc(ts_ms: int) -> str:
+    dt = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
+    return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
 def get_filtered_pairs(client: BinanceClient, cfg: Config) -> List[str]:
@@ -166,36 +151,25 @@ def get_filtered_pairs(client: BinanceClient, cfg: Config) -> List[str]:
     return sorted(set(pairs))
 
 
-def has_signal(candles: List[Candle], cfg: Config, last_signal_time_ms: int | None) -> bool:
-    min_needed = max(cfg.volume_length + 3, cfg.breakout_length + 3)
+def has_signal(candles: List[Candle], cfg: Config, last_signal_index: int | None) -> bool:
+    min_needed = max(cfg.volume_length + 2, cfg.breakout_length + 2)
     if len(candles) < min_needed:
         return False
 
-    # Utilise la dernière bougie clôturée ([-2]) pour éviter les signaux fantômes intrabar.
-    current = candles[-2]
-    current_open_time = current.open_time
-
-    # Pine: avgVolume = ta.sma(volume[1], volumeLength)
-    # Avec current = [-2], alors volume[1] devient [-3], ..., [-2-volume_length]
-    previous_volumes = [c.volume for c in candles[-(cfg.volume_length + 2) : -2]]
+    current = candles[-1]
+    previous_volumes = [c.volume for c in candles[-(cfg.volume_length + 1) : -1]]
     avg_volume = sma(previous_volumes)
     if math.isnan(avg_volume) or avg_volume <= 0:
         return False
 
     volume_spike = current.volume > avg_volume * cfg.volume_multiplier
-    # Pine: close > ta.highest(high[1], breakoutLength)
-    # Avec current = [-2], high[1] commence à [-3].
-    lookback_highs = [c.high for c in candles[-(cfg.breakout_length + 2) : -2]]
+    lookback_highs = [c.high for c in candles[-(cfg.breakout_length + 1) : -1]]
     price_breakout = current.close > max(lookback_highs)
     bullish_candle = current.close > current.open
     raw_signal = volume_spike and price_breakout and bullish_candle
 
-    if last_signal_time_ms is None:
-        can_signal = True
-    else:
-        bar_ms = timeframe_to_ms(cfg.timeframe)
-        bars_since_signal = (current_open_time - last_signal_time_ms) // bar_ms
-        can_signal = bars_since_signal > cfg.cooldown_bars
+    current_index = len(candles) - 1
+    can_signal = last_signal_index is None or (current_index - last_signal_index > cfg.cooldown_bars)
     return raw_signal and can_signal
 
 
@@ -220,10 +194,10 @@ def run(cfg: Config) -> None:
                 if not candles:
                     continue
 
-                last_signal_time_ms = last_signal_by_symbol.get(symbol)
-                if has_signal(candles, cfg, last_signal_time_ms):
-                    c = candles[-2]
-                    last_signal_by_symbol[symbol] = c.open_time
+                last_idx = last_signal_by_symbol.get(symbol)
+                if has_signal(candles, cfg, last_idx):
+                    c = candles[-1]
+                    last_signal_by_symbol[symbol] = len(candles) - 1
 
                     simulated_positions[symbol] = {
                         "entry_price": c.close,
@@ -235,7 +209,7 @@ def run(cfg: Config) -> None:
                         f"🚀 SIM BUY {symbol}\n"
                         f"TF: {cfg.timeframe}\n"
                         f"Entry: {c.close:.6f}\n"
-                        f"Time: {to_display_time(c.open_time, cfg.tz_offset_hours)}"
+                        f"Time: {to_utc(c.open_time)}"
                     )
                     logging.info(msg.replace("\n", " | "))
                     notifier.send(msg)
@@ -256,7 +230,6 @@ def parse_args() -> Config:
     parser.add_argument("--cooldown-bars", type=int, default=20)
     parser.add_argument("--min-quote-volume", type=float, default=5_000_000)
     parser.add_argument("--poll-seconds", type=int, default=30)
-    parser.add_argument("--tz-offset-hours", type=int, default=-2, help="Affichage horaire (défaut: UTC-2)")
     args = parser.parse_args()
 
     return Config(
@@ -267,7 +240,6 @@ def parse_args() -> Config:
         cooldown_bars=args.cooldown_bars,
         min_quote_volume=args.min_quote_volume,
         poll_seconds=args.poll_seconds,
-        tz_offset_hours=args.tz_offset_hours,
     )
 
 

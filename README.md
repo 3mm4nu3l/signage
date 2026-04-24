@@ -5,7 +5,6 @@ Script Python pour:
 - filtrer avec volume 24h minimum (`quoteVolume >= 5M` par défaut)
 - appliquer le signal inspiré du Pine Script (volume spike + breakout + bougie haussière + cooldown)
 - simuler un BUY et envoyer une alerte Telegram
-- évaluer le signal sur **bougie clôturée** pour éviter les signaux intrabar qui disparaissent
 
 ## Installation
 
@@ -36,12 +35,6 @@ Exemple avec paramètres:
 
 ```bash
 python bot_simulator.py --timeframe 15m --min-quote-volume 5000000 --poll-seconds 30
-```
-
-Avec décalage horaire d'affichage (défaut UTC-2):
-
-```bash
-python bot_simulator.py --tz-offset-hours -2
 ```
 
 ## Notes
